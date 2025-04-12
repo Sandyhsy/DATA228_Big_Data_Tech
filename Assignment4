@@ -1,0 +1,81 @@
+1.	import findspark
+2.	findspark.init()
+3.	from pyspark.sql import SparkSession
+4.	from pyspark.sql.functions import explode, split, col
+5.	import os
+6.	import requests
+7.	import gzip
+8.	import shutil
+9.	spark = SparkSession.builder \
+10.	.config("spark.driver.host", "localhost") \
+11.	.config("spark.driver.memory", "4g") \
+12.	.config("spark.executor.memory", "4g") \
+13.	.appName("mr_prac") \
+14.	.getOrCreate()
+15.	spark
+16.	
+17.	def download_and_unzip(url, output_dir="."):
+18.	filename = url.split("/")[-1]
+19.	local_gz_path = os.path.join(output_dir, filename)
+20.	local_tsv_path = local_gz_path.replace(".gz", "")
+21.	
+22.	# Skip download if already exists
+23.	if not os.path.exists(local_gz_path):
+24.	print(f"Downloading {filename}...")
+25.	response = requests.get(url, stream=True)
+26.	with open(local_gz_path, 'wb') as f:
+27.	shutil.copyfileobj(response.raw, f)
+28.	print(f"Downloaded: {local_gz_path}")
+29.	else:
+30.	print(f"File already exists: {local_gz_path}")
+31.	
+32.	# Unzip .gz to .tsv
+33.	if not os.path.exists(local_tsv_path):
+34.	print(f"Unzipping {filename}...")
+35.	with gzip.open(local_gz_path, 'rb') as f_in:
+36.	with open(local_tsv_path, 'wb') as f_out:
+37.	shutil.copyfileobj(f_in, f_out)
+38.	print(f"Unzipped to: {local_tsv_path}")
+39.	else:
+40.	print(f"TSV already exists: {local_tsv_path}")
+41.	
+42.	return local_tsv_path
+43.	
+44.	# IMDb dataset URLs
+45.	urls = [
+46.	"https://datasets.imdbws.com/title.crew.tsv.gz",
+47.	"https://datasets.imdbws.com/name.basics.tsv.gz"
+48.	]
+49.	
+50.	# Download and unzip all
+51.	for url in urls:
+52.	download_and_unzip(url)
+53.	
+54.	
+55.	# Load IMDb crew data
+56.	crew_df = spark.read.csv("title.crew.tsv", sep="\t", header=True, inferSchema=True, nullValue="\\N")
+57.	
+58.	# Load name.basics for mapping nconst -> primaryName
+59.	names_df = spark.read.csv("name.basics.tsv", sep="\t", header=True, inferSchema=True, nullValue="\\N")
+60.	
+61.	# Clean and extract directors (some titles have multiple directors)
+62.	crew_directors = crew_df.select("tconst", explode(split(col("directors"), ",")).alias("director_id")).na.drop()
+63.	
+64.	# Count number of titles per director
+65.	director_counts = crew_directors.groupBy("director_id").count().alias("title_count")
+66.	
+67.	# Join with names to get actual director names
+68.	director_with_names = director_counts.join(
+69.	names_df.select("nconst", "primaryName"),
+70.	director_counts["director_id"] == names_df["nconst"],
+71.	"inner"
+72.	).select("primaryName", "count").orderBy(col("count").desc())
+73.	
+74.	# Show top 20 directors
+75.	director_with_names.show(20, truncate=False)
+76.	
+77.	sc = spark.sparkContext
+78.	print(sc.statusTracker().getJobIdsForGroup(None))
+79.	
+80.	# stopping the Spark session
+81.	spark.stop()
