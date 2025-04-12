@@ -1,0 +1,64 @@
+import findspark
+findspark.init()
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import explode, split, col
+import os
+import requests
+import gzip
+import shutil
+spark = SparkSession.builder \
+    .config("spark.driver.host", "localhost") \
+    .config("spark.driver.memory", "4g") \
+    .config("spark.executor.memory", "4g") \
+    .appName("mr_prac") \
+    .getOrCreate()
+spark
+def download_and_unzip(url, output_dir="."):
+    filename = url.split("/")[-1]
+    local_gz_path = os.path.join(output_dir, filename)
+    local_tsv_path = local_gz_path.replace(".gz", "")
+
+    # Skip download if already exists
+    if not os.path.exists(local_gz_path):
+        print(f"Downloading {filename}...")
+        response = requests.get(url, stream=True)
+        with open(local_gz_path, 'wb') as f:
+            shutil.copyfileobj(response.raw, f)
+        print(f"Downloaded: {local_gz_path}")
+    else:
+        print(f"File already exists: {local_gz_path}")
+
+    # Unzip .gz to .tsv
+    if not os.path.exists(local_tsv_path):
+        print(f"Unzipping {filename}...")
+        with gzip.open(local_gz_path, 'rb') as f_in:
+            with open(local_tsv_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        print(f"Unzipped to: {local_tsv_path}")
+    else:
+        print(f"TSV already exists: {local_tsv_path}")
+
+    return local_tsv_path
+
+# IMDb dataset URLs
+urls = [
+    "https://datasets.imdbws.com/title.crew.tsv.gz",
+    "https://datasets.imdbws.com/name.basics.tsv.gz"
+]
+
+# Download and unzip all
+for url in urls:
+    download_and_unzip(url)
+
+
+# Load IMDb crew data
+crew_df = spark.read.csv("title.crew.tsv", sep="\t", header=True, inferSchema=True, nullValue="\\N")
+
+# Load name.basics for mapping nconst -> primaryName
+names_df = spark.read.csv("name.basics.tsv", sep="\t", header=True, inferSchema=True, nullValue="\\N")
+
+sc = spark.sparkContext
+print(sc.statusTracker().getJobIdsForGroup(None))
+
+# stopping the Spark session
+spark.stop()
